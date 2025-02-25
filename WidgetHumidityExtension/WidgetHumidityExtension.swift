@@ -10,11 +10,21 @@ import SwiftUI
 import WeatherKit
 import CoreLocation
 
+ 
+struct SimpleEntry: TimelineEntry {
+    let date: Date
+    let lastRefresh: Date
+    let relativeHumidity: Double?
+    let absoluteHumidity: Double?
+    let dewPoint: Double?
+    let temperature: Double?
+    let feelsLike: Double?
+    let unit: UnitTemperature?
+}
 
+// MARK: - Humidity Widget
 struct Provider: AppIntentTimelineProvider {
-    private let weatherService = WeatherService.shared
     private let dataManager = WeatherDataManager.shared
-
     
     func placeholder(in context: Context) -> SimpleEntry {
         SimpleEntry(
@@ -40,58 +50,40 @@ struct Provider: AppIntentTimelineProvider {
     }
 
     private func fetchWeatherEntry() async -> SimpleEntry {
-        let lastRefresh = UserDefaults(suiteName: AppConstants.appGroup)?.object(forKey: "LastRefresh") as? Date ?? .distantPast
-        
-        guard let savedLocation = WeatherDataManager.loadSavedLocation() else {
-            print("Widget Error: No saved location in App Group")
-            return errorEntry(lastRefresh: lastRefresh)
+        guard let location = await WeatherDataManager.loadSavedLocation() else {
+            return SimpleEntry.errorEntry()
         }
         
-        print("Widget using location: \(savedLocation.debugDescription)")
-        
-        let location = CLLocation(
-            latitude: savedLocation.latitude,
-            longitude: savedLocation.longitude
-        )
-        
-        // Get saved unit
-        let unit: UnitTemperature = {
-            guard let unitString = UserDefaults(suiteName: AppConstants.appGroup)?
-                .string(forKey: AppConstants.unitKey)
-            else { return .celsius }
-            
-            return unitString == "celsius" ? .celsius : .fahrenheit
-        }()
+        let clLocation = CLLocation(latitude: location.latitude, longitude: location.longitude)
         
         do {
-            let (weather, absHumidity) = try await dataManager.fetchWeatherData(for: location)
-            
-            // Convert values to selected unit
-            let temp = weather.temperature.converted(to: unit).value
-            let feels = weather.apparentTemperature.converted(to: unit).value
-            let dewPoint = weather.dewPoint.converted(to: unit).value
+            let (current, absolute, _, _) = try await dataManager.fetchAllWeatherData(for: clLocation)
+            let unit = await WeatherDataManager.loadTemperatureUnit()
             
             return SimpleEntry(
                 date: Date(),
                 lastRefresh: Date(),
-                relativeHumidity: weather.humidity * 100,
-                absoluteHumidity: absHumidity,
-                dewPoint: dewPoint,
-                temperature: temp,
-                feelsLike: feels,
+                relativeHumidity: current.humidity * 100,
+                absoluteHumidity: absolute,
+                dewPoint: current.dewPoint.converted(to: unit).value,
+                temperature: current.temperature.converted(to: unit).value,
+                feelsLike: current.apparentTemperature.converted(to: unit).value,
                 unit: unit
             )
         } catch {
-            print("Widget Weather Error: \(error.localizedDescription)")
-            return errorEntry()
+            return SimpleEntry.errorEntry()
         }
     }
     
-    
-    private func errorEntry(lastRefresh: Date = .distantPast) -> SimpleEntry {
+}
+
+
+// MARK: - Entry Extensions
+extension SimpleEntry {
+    static func errorEntry() -> SimpleEntry {
         SimpleEntry(
             date: Date(),
-            lastRefresh: lastRefresh,
+            lastRefresh: .distantPast,
             relativeHumidity: nil,
             absoluteHumidity: nil,
             dewPoint: nil,
@@ -102,16 +94,12 @@ struct Provider: AppIntentTimelineProvider {
     }
 }
 
-struct SimpleEntry: TimelineEntry {
-    let date: Date
-    let lastRefresh: Date
-    let relativeHumidity: Double?
-    let absoluteHumidity: Double?
-    let dewPoint: Double?
-    let temperature: Double?
-    let feelsLike: Double?
-    let unit: UnitTemperature?
-}
+
+
+
+
+
+
 
 
 struct WidgetHumidityExtensionEntryView: View {
@@ -256,7 +244,7 @@ struct WidgetHumidityExtension: Widget {
         }
         .configurationDisplayName("Humidity Widget")
         .description("Displays current humidity and temperature")
-        .supportedFamilies([.systemSmall])
+        .supportedFamilies([.systemSmall, .systemMedium])
         .contentMarginsDisabled()
     }
 }

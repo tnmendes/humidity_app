@@ -54,7 +54,7 @@ class WeatherViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDelega
         }
     }
     private var autoRefreshTimer: Timer?
-    private let autoRefreshInterval: TimeInterval = 300 // 5 minutes
+    private let autoRefreshInterval: TimeInterval = 1800 // 30 minutes
     @Published var lastRefresh = Date.distantPast {
         didSet {
             // Schedule next auto-refresh
@@ -131,10 +131,39 @@ class WeatherViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDelega
         super.init()
         localSearchCompleter.delegate = self
         localSearchCompleter.resultTypes = .address
-        loadSavedLocation()
         loadTemperatureUnit()
+        loadSavedLocation()
         startAutoRefreshTimer()
+        
+        if savedLocation != nil {
+            Task {
+                if let loc = self.savedLocation {
+                    let location = CLLocation(
+                        latitude: loc.latitude,
+                        longitude: loc.longitude
+                    )
+                    await self.updateWeather(for: location, enforceCooldown: false)
+                }
+            }
+        }
+        
+        NotificationCenter.default.addObserver(
+            forName: .NSCalendarDayChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task {
+                if let loc = await self?.savedLocation {
+                    let location = CLLocation(
+                        latitude: loc.latitude,
+                        longitude: loc.longitude
+                    )
+                    await self?.updateWeather(for: location)
+                }
+            }
+        }
     }
+    
     
     deinit {
         autoRefreshTimer?.invalidate()
@@ -229,48 +258,40 @@ class WeatherViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDelega
     
     /// Fetch weather data using WeatherKit.
     func updateWeather(for location: CLLocation, enforceCooldown: Bool = true) async {
-        let refreshAllowed = Date().timeIntervalSince(lastRefresh) > 30 || !enforceCooldown
+        /*let refreshAllowed = Date().timeIntervalSince(lastRefresh) > 30 || !enforceCooldown
         
         if !refreshAllowed {
             toastMessage = "Please wait 30 seconds between refreshes (\(timeSinceLastRefresh))"
             return
-        }
+        }*/
         
         isLoading = true
         defer { isLoading = false }
         
-        UserDefaults(suiteName: AppConstants.appGroup)?.set(Date(), forKey: "LastRefresh")
+        // Check UI cooldown only for user-initiated refreshes
+        if enforceCooldown && Date().timeIntervalSince(lastRefresh) < 30 {
+            toastMessage = "Please wait 30 seconds between refreshes"
+            return
+        }
+        
         do {
-            let (weather, absHumidity) = try await WeatherDataManager.shared.fetchWeatherData(for: location)
-            currentWeather = weather
-            absoluteHumidity = absHumidity
+            let (current, absolute, hourly, optimalWindow) = try await WeatherDataManager.shared.fetchAllWeatherData(
+                for: location,
+                forceRefresh: true // Always force refresh for manual updates
+            )
+            
+            currentWeather = current
+            absoluteHumidity = absolute
+            hourlyHumidityData = hourly
+            optimalWindowTime = optimalWindow
             errorMessage = nil
             lastRefresh = Date()
             
-            let startDate = Date()
-            let endDate = Calendar.current.date(byAdding: .hour, value: 25, to: startDate) ?? startDate
-            let hourlyWeather = try await weatherService.weather(for: location, including: .hourly(startDate: startDate, endDate: endDate))
-
-            // Convert to hourly humidity data
-            self.hourlyHumidityData = hourlyWeather.map { HourlyHumidity(date: $0.date, humidity: $0.humidity * 100) }
-            do {
-                let data = try JSONEncoder().encode(self.hourlyHumidityData)
-                UserDefaults(suiteName: AppConstants.appGroup)?.set(data, forKey: AppConstants.hourlyHumidityKey)
-            } catch {
-                print("Error saving hourly humidity: \(error)")
-            }
-            
-            calculateOptimalWindowTime()
-            
-            if let optimalWindow = self.optimalWindowTime {
-                UserDefaults(suiteName: AppConstants.appGroup)?.set(optimalWindow.0, forKey: AppConstants.optimalWindowStartKey)
-                UserDefaults(suiteName: AppConstants.appGroup)?.set(optimalWindow.1, forKey: AppConstants.optimalWindowEndKey)
-                
-                let minHumidity = self.hourlyHumidityData
-                    .filter { $0.date >= optimalWindow.0 && $0.date <= optimalWindow.1 }
-                    .min(by: { $0.humidity < $1.humidity })?.humidity
-                UserDefaults(suiteName: AppConstants.appGroup)?.set(minHumidity, forKey: AppConstants.predictedHumidityKey)
-            }
+        } catch let error as NSError where error.domain == "WeatherError" && error.code == 429 {
+            let remaining = error.userInfo["remaining"] as? TimeInterval ?? 300
+            let minutes = Int(ceil(remaining / 60))
+            toastMessage = "Next refresh available in \(minutes) minutes"
+            errorMessage = nil
             
         } catch {
             errorMessage = "Error fetching weather: \(error.localizedDescription)"
@@ -284,16 +305,22 @@ class WeatherViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDelega
     private func loadSavedLocation() {
         if let loc = WeatherDataManager.loadSavedLocation() {
             savedLocation = loc
-            let coordinate = CLLocationCoordinate2D(latitude: loc.latitude, longitude: loc.longitude)
-            let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
-            isLoading = true
+            searchText = loc.name // Ensure search text is updated
+            let coordinate = CLLocationCoordinate2D(
+                latitude: loc.latitude,
+                longitude: loc.longitude
+            )
+            let location = CLLocation(
+                latitude: coordinate.latitude,
+                longitude: coordinate.longitude
+            )
+            
+            // Force initial load
             Task {
-                await updateWeather(for: location)
-                searchText = loc.name
+                await updateWeather(for: location, enforceCooldown: false)
             }
         }
     }
-    
     
     private func saveHomeHours() {
         UserDefaults(suiteName: AppConstants.appGroup)?.set([

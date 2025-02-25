@@ -15,16 +15,61 @@ struct IndoorHumidityCalculator: View {
     let outdoorAbsolute: Double?
     let advice: String?
     
+    private var temperatureProxy: Binding<String> {
+        Binding<String>(
+            get: { self.indoorTemperature },
+            set: { newValue in
+                // Convert commas to periods first
+                let converted = newValue.replacingOccurrences(of: ",", with: ".")
+                
+                // Filter invalid characters and handle decimal point
+                let filtered = converted
+                    .filter { "0123456789.".contains($0) }
+                    .replacingOccurrences(of: #"(?<=.)\.(?=.*\.)"#,
+                                        with: "",
+                                        options: .regularExpression) // Remove extra dots
+                
+                // Split into components and limit decimal places
+                let components = filtered.components(separatedBy: ".")
+                var final = components[0]
+                
+                if components.count > 1 {
+                    let decimalPart = String(components[1].prefix(2)) // Allow max 2 decimal places
+                    final += "." + decimalPart
+                }
+                
+                // Handle leading decimal point
+                if final.hasPrefix(".") {
+                    final = "0" + final
+                }
+                
+                self.indoorTemperature = final
+            }
+        )
+    }
+    
+    private var humidityProxy: Binding<String> {
+        Binding<String>(
+            get: { self.indoorHumidity },
+            set: {
+                let filtered = $0
+                    .filter { "0123456789".contains($0) }
+                    .prefix(3) // Max 100% humidity
+                self.indoorHumidity = String(filtered)
+            }
+        )
+    }
+    
     var body: some View {
         VStack(spacing: 12) {
-            Text("🏠 Indoor Humidity Calculator")
+            Text("🏠 Indoor Absolute Humidity Calculator")
                 .font(.headline)
             
             HStack(spacing: 16) {
                 VStack(alignment: .leading) {
                     Text("Indoor Temperature")
                         .font(.caption)
-                    TextField("Temp", text: $indoorTemperature)
+                    TextField("Temp", text: temperatureProxy)
                         .keyboardType(.decimalPad)
                         .textFieldStyle(RoundedBorderTextFieldStyle())
                         .frame(width: 100)
@@ -33,7 +78,7 @@ struct IndoorHumidityCalculator: View {
                 VStack(alignment: .leading) {
                     Text("Indoor Humidity")
                         .font(.caption)
-                    TextField("RH%", text: $indoorHumidity)
+                    TextField("RH%", text: humidityProxy)
                         .keyboardType(.numberPad)
                         .textFieldStyle(RoundedBorderTextFieldStyle())
                         .frame(width: 100)
@@ -73,7 +118,7 @@ struct IndoorHumidityCalculator: View {
             }
         }
         .padding()
-        .frame(maxWidth: .infinity) // Add this line
+        .frame(maxWidth: .infinity)
         .background(
             RoundedRectangle(cornerRadius: 10)
                 .fill(Color.orange.opacity(0.1))

@@ -5,92 +5,12 @@
 //  Created by Tiago N Mendes on 22/02/2025.
 //
 
+
 import WidgetKit
 import SwiftUI
 import Charts
-
-/*
-struct Provider: AppIntentTimelineProvider {
-    func placeholder(in context: Context) -> SimpleEntry {
-        SimpleEntry(date: Date(), configuration: ConfigurationAppIntent())
-    }
-
-    func snapshot(for configuration: ConfigurationAppIntent, in context: Context) async -> SimpleEntry {
-        SimpleEntry(date: Date(), configuration: configuration)
-    }
-    
-    func timeline(for configuration: ConfigurationAppIntent, in context: Context) async -> Timeline<SimpleEntry> {
-        var entries: [SimpleEntry] = []
-
-        // Generate a timeline consisting of five entries an hour apart, starting from the current date.
-        let currentDate = Date()
-        for hourOffset in 0 ..< 5 {
-            let entryDate = Calendar.current.date(byAdding: .hour, value: hourOffset, to: currentDate)!
-            let entry = SimpleEntry(date: entryDate, configuration: configuration)
-            entries.append(entry)
-        }
-
-        return Timeline(entries: entries, policy: .atEnd)
-    }
-
-//    func relevances() async -> WidgetRelevances<ConfigurationAppIntent> {
-//        // Generate a list containing the contexts this widget is relevant in.
-//    }
-}
-
-struct SimpleEntry: TimelineEntry {
-    let date: Date
-    let configuration: ConfigurationAppIntent
-}
-
-struct WidgetOptimalVentilationExtensionEntryView : View {
-    var entry: Provider.Entry
-
-    var body: some View {
-        Text("Time:")
-        Text(entry.date, style: .time)
-
-        Text("Favorite Emoji:")
-        Text(entry.configuration.favoriteEmoji)
-    }
-}
-
-struct WidgetOptimalVentilationExtension: Widget {
-    let kind: String = "WidgetOptimalVentilationExtension"
-
-    var body: some WidgetConfiguration {
-        AppIntentConfiguration(kind: kind, intent: ConfigurationAppIntent.self, provider: Provider()) { entry in
-            WidgetOptimalVentilationExtensionEntryView(entry: entry)
-                .containerBackground(.fill.tertiary, for: .widget)
-        }
-    }
-}
-
-extension ConfigurationAppIntent {
-    fileprivate static var smiley: ConfigurationAppIntent {
-        let intent = ConfigurationAppIntent()
-        intent.favoriteEmoji = "😀"
-        return intent
-    }
-    
-    fileprivate static var starEyes: ConfigurationAppIntent {
-        let intent = ConfigurationAppIntent()
-        intent.favoriteEmoji = "🤩"
-        return intent
-    }
-}
-
-#Preview(as: .systemSmall) {
-    WidgetOptimalVentilationExtension()
-} timeline: {
-    SimpleEntry(date: .now, configuration: .smiley)
-    SimpleEntry(date: .now, configuration: .starEyes)
-}
-*/
-
-import WidgetKit
-import SwiftUI
 import AppIntents
+import CoreLocation
 
 struct OptimalEntry: TimelineEntry {
     let date: Date
@@ -102,17 +22,27 @@ struct OptimalEntry: TimelineEntry {
     let unit: UnitTemperature?
 }
 
-struct OptimalProvider: AppIntentTimelineProvider {
-    func placeholder(in context: Context) -> OptimalEntry {
+extension OptimalEntry {
+    static func errorEntry() -> OptimalEntry {
         OptimalEntry(
             date: Date(),
-            lastRefresh: Date(),
-            optimalWindow: (Date().addingTimeInterval(-3600), Date()),
-            predictedHumidity: 45,
+            lastRefresh: .distantPast,
+            optimalWindow: nil,
+            predictedHumidity: nil,
             hourlyHumidity: [],
-            relativeHumidity: 60,
-            unit: .celsius
+            relativeHumidity: nil,
+            unit: nil
         )
+    }
+}
+
+
+// MARK: - Optimal Ventilation Widget
+struct OptimalProvider: AppIntentTimelineProvider {
+    private let dataManager = WeatherDataManager.shared
+    
+    func placeholder(in context: Context) -> OptimalEntry {
+        OptimalEntry.errorEntry()
     }
 
     func snapshot(for configuration: ConfigurationAppIntent, in context: Context) async -> OptimalEntry {
@@ -121,45 +51,34 @@ struct OptimalProvider: AppIntentTimelineProvider {
     
     func timeline(for configuration: ConfigurationAppIntent, in context: Context) async -> Timeline<OptimalEntry> {
         let entry = await fetchOptimalEntry()
-        let nextUpdate = Calendar.current.date(byAdding: .hour, value: 1, to: Date())!
+        let nextUpdate = Calendar.current.date(byAdding: .minute, value: 60, to: Date())!
         return Timeline(entries: [entry], policy: .after(nextUpdate))
     }
 
     private func fetchOptimalEntry() async -> OptimalEntry {
-        let lastRefresh = UserDefaults(suiteName: AppConstants.appGroup)?.object(forKey: "LastRefresh") as? Date ?? .distantPast
+        guard let location = await WeatherDataManager.loadSavedLocation() else {
+            return OptimalEntry.errorEntry()
+        }
         
-        let optimalWindow: (Date, Date)? = {
-            guard let start = UserDefaults(suiteName: AppConstants.appGroup)?.object(forKey: AppConstants.optimalWindowStartKey) as? Date,
-                  let end = UserDefaults(suiteName: AppConstants.appGroup)?.object(forKey: AppConstants.optimalWindowEndKey) as? Date
-            else { return nil }
-            return (start, end)
-        }()
+        let clLocation = CLLocation(latitude: location.latitude, longitude: location.longitude)
         
-        let predictedHumidity = UserDefaults(suiteName: AppConstants.appGroup)?.double(forKey: AppConstants.predictedHumidityKey)
-        
-        let hourlyHumidity: [HourlyHumidity] = {
-            guard let data = UserDefaults(suiteName: AppConstants.appGroup)?.data(forKey: AppConstants.hourlyHumidityKey)
-            else { return [] }
-            return (try? JSONDecoder().decode([HourlyHumidity].self, from: data)) ?? []
-        }()
-        
-        let relativeHumidity = UserDefaults(suiteName: AppConstants.appGroup)?.double(forKey: "relativeHumidity")
-        
-        let unit: UnitTemperature = {
-            guard let unitString = UserDefaults(suiteName: AppConstants.appGroup)?.string(forKey: AppConstants.unitKey)
-            else { return .celsius }
-            return unitString == "celsius" ? .celsius : .fahrenheit
-        }()
-        
-        return OptimalEntry(
-            date: Date(),
-            lastRefresh: lastRefresh,
-            optimalWindow: optimalWindow,
-            predictedHumidity: predictedHumidity,
-            hourlyHumidity: hourlyHumidity,
-            relativeHumidity: relativeHumidity,
-            unit: unit
-        )
+        do {
+            let (_, _, hourly, optimalWindow) = try await dataManager.fetchAllWeatherData(for: clLocation)
+            
+            return OptimalEntry(
+                date: Date(),
+                lastRefresh: Date(),
+                optimalWindow: optimalWindow,
+                predictedHumidity: optimalWindow.flatMap { window in
+                    hourly.first { $0.date >= window.0 && $0.date <= window.1 }?.humidity
+                },
+                hourlyHumidity: hourly,
+                relativeHumidity: UserDefaults(suiteName: AppConstants.appGroup)?.double(forKey: "relativeHumidity"),
+                unit: await WeatherDataManager.loadTemperatureUnit()
+            )
+        } catch {
+            return OptimalEntry.errorEntry()
+        }
     }
 }
 

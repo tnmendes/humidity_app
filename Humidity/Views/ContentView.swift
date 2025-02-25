@@ -200,6 +200,9 @@ struct ContentView: View {
                         refreshButton
                     }
                 }
+                .onTapGesture {
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                }
             }
             .navigationViewStyle(StackNavigationViewStyle())
         }
@@ -208,15 +211,14 @@ struct ContentView: View {
         VStack(alignment: .trailing, spacing: 4) {
             Button {
                 Task {
-                      if let loc = viewModel.savedLocation {
-                          let location = CLLocation(
-                              latitude: loc.latitude,
-                              longitude: loc.longitude
-                          )
-                          // Respect cooldown for manual refreshes
-                          await viewModel.updateWeather(for: location)
-                      }
-                  }
+                    if let loc = viewModel.savedLocation {
+                        let location = CLLocation(
+                            latitude: loc.latitude,
+                            longitude: loc.longitude
+                        )
+                        await viewModel.updateWeather(for: location, enforceCooldown: true)
+                    }
+                }
             } label: {
                 if viewModel.isLoading {
                     ProgressView()
@@ -228,7 +230,7 @@ struct ContentView: View {
             
             Text("Last update: \(viewModel.lastRefresh.formatted(date: .omitted, time: .shortened))")
                 .font(.caption2)
-                .animation(.easeInOut, value: viewModel.shouldDisableRefresh)
+                .foregroundColor(.primary)
                 .padding(.top, -6)
         }
     }
@@ -290,7 +292,7 @@ struct WeatherDisplayView: View {
                     WeatherMetricView(
                         icon: "aqi.medium",
                         color: .gray,
-                        title: "Abs Humidity",
+                        title: "Abs. Humidity",
                         value: "\(String(format: "%.1f", absoluteHumidity)) g/m³"
                     )
                 }
